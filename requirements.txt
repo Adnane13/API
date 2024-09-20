@@ -1,2 +1,8 @@
 fastapi
+sqlalchemy
+databases
+asyncpg
+psycopg2
 uvicorn
+passlib[bcrypt]
+python-jose
