@@ -2,7 +2,8 @@ fastapi
 sqlalchemy
 databases
 asyncpg
-psycopg2
+#psycopg2
+psycopg2-binary
 uvicorn
 passlib[bcrypt]
 python-jose
