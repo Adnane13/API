@@ -1,115 +1,60 @@
-from fastapi import FastAPI, Depends, HTTPException, status
-from pydantic import BaseModel
-from sqlalchemy import create_engine, MetaData, Table, Column, String
-from sqlalchemy.sql import select
-from databases import Database
-from passlib.context import CryptContext
-from jose import JWTError, jwt
-from datetime import datetime, timedelta
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from sqlalchemy.orm import Session
 
+import crud, models, schemas
+from database import SessionLocal, engine
 
-import os
+models.Base.metadata.create_all(bind=engine)
 
-
-USERNAME = os.getenv("username")
-PASSWORD = os.getenv("password")
-PSQLADDRESS = os.getenv("psqladdress")
-PSQLDB = os.getenv("psqldb") # the db to use 
-
-
-
-
-
-
-
-# Database configuration
-DATABASE_URL = "postgresql://" + USERNAME + ":" + PASSWORD + "@" + PSQLADDRESS + "/" + PSQLDB
-
-# SQLAlchemy engine, metadata, and table definition
-engine = create_engine(DATABASE_URL)
-metadata = MetaData()
-
-users_table = Table(
-    "users",
-    metadata,
-    Column("username", String, primary_key=True),
-    Column("hashed_password", String),
-)
-
-# Database instance
-database = Database(DATABASE_URL)
-
-# FastAPI instance
 app = FastAPI()
 
-# Password hashing context
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-# JWT Secret key and algorithm
-SECRET_KEY = "your_secret_key"  # Replace with a secure random key
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+@app.middleware("http")
+async def db_session_middleware(request: Request, call_next):
+    response = Response("Internal server error", status_code=500)
+    try:
+        request.state.db = SessionLocal()
+        response = await call_next(request)
+    finally:
+        request.state.db.close()
+    return response
 
-# Pydantic models
-class UserIn(BaseModel):
-    username: str
-    password: str
 
-class UserOut(BaseModel):
-    username: str
+# Dependency
+def get_db(request: Request):
+    return request.state.db
 
-class Token(BaseModel):
-    access_token: str
-    token_type: str
 
-# Create the users table if it doesn't exist
-@app.on_event("startup")
-async def startup():
-    await database.connect()
-    async with engine.begin() as conn:
-        await conn.run_sync(metadata.create_all)
+@app.post("/users/", response_model=schemas.User)
+def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
+    db_user = crud.get_user_by_email(db, email=user.email)
+    if db_user:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    return crud.create_user(db=db, user=user)
 
-@app.on_event("shutdown")
-async def shutdown():
-    await database.disconnect()
 
-# Utility functions
-def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
+@app.get("/users/", response_model=list[schemas.User])
+def read_users(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    users = crud.get_users(db, skip=skip, limit=limit)
+    return users
 
-def get_password_hash(password):
-    return pwd_context.hash(password)
 
-def create_access_token(data: dict, expires_delta: timedelta = None):
-    to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-    to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+@app.get("/users/{user_id}", response_model=schemas.User)
+def read_user(user_id: int, db: Session = Depends(get_db)):
+    db_user = crud.get_user(db, user_id=user_id)
+    if db_user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return db_user
 
-# Register endpoint
-@app.post("/register/", response_model=UserOut)
-async def register(user_in: UserIn):
-    query = users_table.select().where(users_table.c.username == user_in.username)
-    existing_user = await database.fetch_one(query)
-    
-    if existing_user:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Username already registered")
-    
-    hashed_password = get_password_hash(user_in.password)
-    query = users_table.insert().values(username=user_in.username, hashed_password=hashed_password)
-    await database.execute(query)
-    
-    return UserOut(username=user_in.username)
 
-# Login endpoint
-@app.post("/login/", response_model=Token)
-async def login(user_in: UserIn):
-    query = users_table.select().where(users_table.c.username == user_in.username)
-    user = await database.fetch_one(query)
-    
-    if not user or not verify_password(user_in.password, user["hashed_password"]):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
-    
-    access_token = create_access_token(data={"sub": user_in.username})
-    return {"access_token": access_token, "token_type": "bearer"}
+@app.post("/users/{user_id}/items/", response_model=schemas.Item)
+def create_item_for_user(
+    user_id: int, item: schemas.ItemCreate, db: Session = Depends(get_db)
+):
+    return crud.create_user_item(db=db, item=item, user_id=user_id)
 
+
+@app.get("/items/", response_model=list[schemas.Item])
+def read_items(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    items = crud.get_items(db, skip=skip, limit=limit)
+    return items
